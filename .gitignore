@@ -1,0 +1,8 @@
+*.json
+*.vim
+*.pyc
+
+venv/
+*.egg-info/
+pip-wheel-metadata/
+pypi_upload.txt
