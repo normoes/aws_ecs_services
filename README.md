@@ -1,3 +1,6 @@
+[![GitHub Release](https://img.shields.io/github/v/release/normoes/aws_ecs_services.svg)](https://github.com/normoes/aws_ecs_services/releases)
+[![GitHub Tags](https://img.shields.io/github/v/tag/normoes/aws_ecs_services.svg)](https://github.com/normoes/aws_ecs_services/tags)
+
 # aws_ecs_services
 
 ## Why
