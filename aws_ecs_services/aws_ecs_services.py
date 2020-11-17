@@ -6,6 +6,7 @@ Goal:
   * List all instance ids in a cluster.
   * list all services in a cluster.
 
+python -m aws_ecs_services.aws_ecs_services by-service-name --region <aws_region> --cluster <ecs_cluster_name> --name <service_name>
 How to:
   * Get help
     - aws_ecs_services.py -h
@@ -50,6 +51,9 @@ from time import sleep
 import re
 from threading import Thread
 from queue import Queue
+import string
+import json
+from typing import Dict
 
 import boto3
 import botocore
@@ -73,6 +77,11 @@ IGNORED_NAMES = ["internalecspause"]  # ignored parts of container names
 
 container_queue = Queue()
 
+# Config folder
+HOME_DIR = os.path.expanduser("~")
+CONFIG_FOLDER = "aws_tools"
+CONFIG_FILE = "config"
+
 # Function to display hostname and
 # IP address
 def get_host_ip(host_name=""):
@@ -80,14 +89,12 @@ def get_host_ip(host_name=""):
     try:
         host_ip = socket.gethostbyname(host_name)
     except (socket.error) as e:
-        logger.error(f"Unable to get IP for' {host_name}': {str(e)}")
+        logger.error(f"Unable to get IP for '{host_name}': {str(e)}")
         sys.exit(1)
-    logger.debug(f"IP of {SERVICE_DNS} is {host_ip}")
     return host_ip
 
 
 def get_instance_ids_from_cluster(cluster=CLUSTER_NAME, client=None):
-    logger.info(f"Checking cluster: {cluster}")
     try:
         container_instances = client.list_container_instances(cluster=cluster)[
             "containerInstanceArns"
@@ -150,7 +157,12 @@ def get_containers(
         logger.error(
             f"Instance id '{instance_id}' not found. Is the 'ssm-agent' installed? {str(e)}"
         )
-        sys.exit(1)
+        # sys.exit(1)
+        return
+    except (botocore.exceptions.ClientError) as e:
+        if e.response["Error"]["Code"] == "AccessDeniedException":
+            logger.error(f"Check your role and permissions: {str(e)}.")
+        return
 
     command_id = response["Command"]["CommandId"]
 
@@ -262,10 +274,35 @@ def get_instance_id_by_service_name(
         print("\n".join(container_names))
 
 
-def main():
-    """
+def replace_config(default: str, variable: str, local_vars: Dict) -> str:
+    value = default
+    # Get a list of parts of the given string.
 
-    """
+    # The resulting tuples contain the formattable strings (like "{variable}").
+    # The second position contains the name of the variable used with the string replacement.
+    # Example: 'string.Formatter().parse("Hello {name}.") returns: '[('Hello ', 'name', '', None)]'.
+    # So `[1]` returns the name of the variable to use for the string replacement.
+    substitute_keys = [
+        tup[1]
+        for tup in string.Formatter().parse(default)
+        if tup[1] is not None
+    ]
+    if substitute_keys:
+        substitutes = {}
+        try:
+            for substitute in substitute_keys:
+                substitutes.update({substitute: local_vars[substitute]})
+            value = default.format(**substitutes)
+        except (KeyError) as e:
+            logger.error(
+                f"Please check the variables in your configuration file. '{variable}': '{default}': {str(e)}"
+            )
+
+    return value
+
+
+def main():
+    """"""
 
     from ._version import __version__
 
@@ -280,6 +317,25 @@ def main():
         version="%(prog)s {version}".format(version=__version__),
     )
 
+    parser.add_argument(
+        "--project",
+        default="",
+        help="Project to use. Requires a valid configuration in the config file.",
+    )
+    parser.add_argument(
+        "--service",
+        default="",
+        help="Service name to connect to. Requires a valid configuration in the config file.",
+    )
+    parser.add_argument(
+        "--config",
+        default=os.path.join(
+            os.path.join(os.path.join(HOME_DIR, ".config"), CONFIG_FOLDER),
+            CONFIG_FILE,
+        ),
+        help="Configuration to use. Default configuration file: '~/.config/aws_tools/config'.",
+    )
+
     # Same for all subcommnds
     config = argparse.ArgumentParser(add_help=False)
 
@@ -289,7 +345,7 @@ def main():
     config.add_argument(
         "-c",
         "--cluster",
-        required=True,
+        default="",
         help="AWS ECS cluster to get instances from.",
     )
     config.add_argument(
@@ -310,7 +366,7 @@ def main():
     parser_dns.add_argument(
         "-d",
         "--dns",
-        required=True,
+        default="",
         help="DNS name of the service to find the instance for.",
     )
     parser_dns.add_argument(
@@ -328,7 +384,7 @@ def main():
         parents=[config],
         help="Get instance id by service's name.",
     )
-    name_action = parser_name.add_mutually_exclusive_group(required=True)
+    name_action = parser_name.add_mutually_exclusive_group()
     name_action.add_argument(
         "-n",
         "--name",
@@ -338,14 +394,28 @@ def main():
 
     # Return all cluster instances
     subparsers.add_parser(
-        "list-instances", parents=[config], help="Get all cluster instances.",
+        "list-instances",
+        parents=[config],
+        help="Get all cluster instances.",
     )
 
-    # Return all cluster services
+    # Return all running cluster services.
     subparsers.add_parser(
         "list-services",
         parents=[config],
         help="Get all active cluster services.",
+    )
+    # Return all configured services.
+    subparsers.add_parser(
+        "list-configured-services",
+        parents=[config],
+        help="Get all configured services, in the config file.",
+    )
+    # Return all configured projects.
+    subparsers.add_parser(
+        "list-configured-projects",
+        parents=[config],
+        help="Get all configured projects, in the config file.",
     )
 
     args = parser.parse_args()
@@ -353,18 +423,95 @@ def main():
     by_service_dns = False
     by_service_name = False
     only_instance_ids = False
+    list_running_services = False
     list_services = False
+    list_projects = False
+    use_config = False
 
     debug = args.debug
     if debug:
         logger.setLevel(logging.DEBUG)
+        logger.debug("Show DEBUG information.")
+        stream_handler = logging.StreamHandler(sys.stdout)
+        formatter = logging.Formatter(f"%(lineno)s: {logging.BASIC_FORMAT}")
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+        logger.propagate = False
     else:
         logger.setLevel(logging.INFO)
 
-    region = args.region
-    logger.info(f"Working in: {region}")
+    # If a configuration file and a project are given,the configruation file is used.
+    # Otherwise the cli ooptions are considerd.
+    project = args.project
+    # Variable replacement in config file uses '{service}'.
+    service = args.service
+    config = args.config
+    if (
+        os.path.exists(config)
+        and project
+        or args.subcommand
+        in ("list-configured-projects", "list-configured-services")
+    ):
+        logger.info(f"Loading config from: '{config}'.")
+        if not os.path.exists(config):
+            logger.error(f"No config file: '{config}'.")
+            return 1
+        use_config = True
 
-    cluster_name = args.cluster
+    if use_config:
+        data = None
+        try:
+            with open(config, "r") as config_file:
+                data = json.load(config_file)
+        except (ValueError) as e:
+            logger.error(
+                f"Check the JSON sytanx in the config file '{config}': '{str(e)}'"
+            )
+            return 1
+        logger.debug(f"Data: {data}")
+        if not data or not isinstance(data, dict):
+            logger.error(f"Could not load configuration: '{data}'.")
+            return 1
+
+    if use_config:
+        region = data.get("region", args.region)
+    else:
+        region = args.region
+
+    if use_config:
+        projects = data.get("projects", {})
+        if args.subcommand not in ("list-configured-projects"):
+            if project not in projects:
+                logger.error(
+                    f"Missing configuration for project: '{project}'. Choose from {list(projects.keys())}."
+                )
+                return 1
+            project_config = projects.get(project, None)
+            if not project_config:
+                logger.error(
+                    f"Missing configuration for project: '{project}'. Choose from {list(projects.keys())}."
+                )
+                return 1
+            region = project_config.get("region", region)
+            cluster_name = project_config.get("cluster", "")
+            # Variable replacement in config file uses '{cluster}'.
+            cluster = cluster_name
+            cluster_ = cluster
+
+            # Get service-specific configuration.
+            services = project_config.get("services", {})
+            service_config = None
+            if services:
+                service_config = services.get(service, None)
+                logger.debug(f"Service config: {service_config}")
+                if service_config:
+                    cluster_ = service_config.get("cluster", cluster_name)
+
+            cluster_name = replace_config(cluster_, "cluster", locals())
+    else:
+        cluster_name = args.cluster
+
+    logger.info(f"Working in: {region}")
 
     session = boto3.session.Session()
     ecs_client = session.client("ecs", region)
@@ -373,24 +520,82 @@ def main():
 
     if args.subcommand == "by-service-dns":
         by_service_dns = True
-        service_dns = args.dns
+        if use_config:
+            service_dns = project_config.get("dns", "")
+            service_dns_ = service_dns
+            if service_config:
+                service_dns_ = service_config.get("dns", service_dns)
+            service_dns = replace_config(service_dns_, "service_dns", locals())
+        else:
+            service_dns = args.dns
+        if not service_dns:
+            logger.error(f"DNS name missing.")
+            return 1
+
         output_info = args.output
     elif args.subcommand == "by-service-name":
         by_service_name = True
-        service_name = args.name
+        if use_config:
+            service_name = project_config.get("name", "")
+            service_name_ = service_name
+            if service_config:
+                service_name_ = service_config.get("name", service_name)
+            service_name = replace_config(
+                service_name_, "service_name", locals()
+            )
+            service_name = service_name if service_name else service
+        else:
+            service_name = args.name
     elif args.subcommand == "list-instances":
         only_instance_ids = True
     elif args.subcommand == "list-services":
+        list_running_services = True
+        service_name = None
+    elif args.subcommand == "list-configured-services":
         list_services = True
         service_name = None
+    elif args.subcommand == "list-configured-projects":
+        list_projects = True
+        service_name = None
 
-    if only_instance_ids:
+    if list_projects:
+        if not use_config:
+            logger.error("Only available when using a configuration file.")
+            return 1
+        if not projects:
+            logger.error(
+                "Could not load projects from configuration file: '{config}'."
+            )
+            return 1
+        print(f"Found in {config}.")
+        print(*list(projects.keys()), sep="\n")
+        return
+
+    if not cluster_name:
+        logger.error(f"Cluster name missing.")
+        return 1
+
+    if list_services:
+        if not use_config:
+            logger.error("Only available when using a configuration file.")
+            return 1
+        if not services:
+            logger.error(
+                "Could not load services from configuration file: '{config}'."
+            )
+            return 1
+        print(f"Found in {config}.")
+        print(*services, sep="\n")
+        return
+    elif only_instance_ids:
+        logger.info(f"Checking cluster: {cluster_name}")
         instance_ids = get_instance_ids_from_cluster(
             cluster=cluster_name, client=ecs_client
         )
         print(" ".join(instance_ids))
         return
-    elif by_service_name or list_services:
+    elif by_service_name or list_running_services:
+        logger.info(f"Checking cluster: {cluster_name}")
         instance_ids = get_instance_ids_from_cluster(
             cluster=cluster_name, client=ecs_client
         )
@@ -398,19 +603,26 @@ def main():
             region=region,
             instance_ids=instance_ids,
             service=service_name,
-            list_services=list_services,
+            list_services=list_running_services,
             client=ssm_client,
         )
+
         return
     elif by_service_dns:
+        logger.info(f"Checking cluster: {cluster_name}")
         service_ip = get_host_ip(host_name=service_dns)
+        logger.info(f"IP of {service_dns} is {service_ip}")
+        logger.debug(f"Output: {output_info}.")
         if output_info == "service":
             print(service_ip)
             return
         else:
+            logger.debug(f"Get instance IDs for cluster:' {cluster_name}'.")
             instance_ids = get_instance_ids_from_cluster(
                 cluster=cluster_name, client=ecs_client
             )
+            logger.debug(instance_ids)
+            logger.debug("Get instance details.")
             (
                 instance_private_ip,
                 instance_private_dns,

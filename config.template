@@ -1,0 +1,42 @@
+{
+    "region": "eu-west-1",
+    "projects": {
+        "projectA": {
+            "region": "eu-west-2",
+            "cluster": "default",
+            "dns": "{service}.domain.com",
+            "services": {
+                "serviceA": {
+                    "description": "Service is using project-level default values for 'cluster' and 'dns'.",
+                    "name": "serviceA-[0-9]+"
+                },
+                "serviceB": {
+                    "description": "Service name is part of cluster name. Using variable replacement for 'cluster'",
+                    "cluster": "{cluster}-serviceB"
+                },
+                "serviceC": {
+                    "description": "Service name is part of cluster name. Using variable replacement for 'service'.",
+                    "cluster": "{cluster}-{service}"
+                },
+                "serviceD": {
+                    "description": "Same as 'serviceC', even runs in the same AWS ECS service - Is configured as additional container in the task definition of 'serviceC'.",
+                    "cluster": "{cluster}-serviceC",
+                    "dns": "serviceC.domain.com"
+                },
+                "serviceE": {
+                    "description": "Service is not deployed with 'awsvpc', no dedicated IP, no DNS name.",
+                    "dns": ""
+                }
+            }
+        },
+        "projectB": {
+            "cluster": "projectB",
+            "dns": "{cluster}-{service}.domain.com",
+            "services": {
+                "serviceA": {
+                    "description": "Service is using project-level default values for 'cluster' and 'dns'."
+                }
+            }
+        }
+    }
+}

@@ -3,6 +3,7 @@
 *.pyc
 
 venv/
+dist/
 *.egg-info/
 pip-wheel-metadata/
 pypi_upload.txt
