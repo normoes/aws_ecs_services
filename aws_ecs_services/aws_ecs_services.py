@@ -43,7 +43,6 @@ How to:
 """
 
 import os
-import argparse
 import socket
 import logging
 import sys
@@ -53,17 +52,22 @@ from threading import Thread
 from queue import Queue
 import string
 import json
-from typing import Dict
+from typing import Dict, List, Optional
 
 import boto3
 import botocore
 
+from .environment_defaults import (
+    REGION_DEFAULT,
+    OUTPUT_INFO_DEFAULT,
+    IGNORED_CONTAINERS,
+    IGNORED_NAMES,
+)
+
+
 logging.basicConfig()
 logger = logging.getLogger("AwsGetInstance")
 logger.setLevel(logging.INFO)
-
-REGION_DEFAULT = "eu-west-1"
-OUTPUT_INFO_DEFAULT = "ip"
 
 REGION = os.environ.get("AWS_REGION", REGION_DEFAULT)
 CLUSTER_NAME = os.environ.get("CLUSTER_NAME", None)
@@ -71,16 +75,7 @@ SERVICE_DNS = os.environ.get("SERVICE_DNS", None)
 SERVICE_NAME = os.environ.get("SERVICE_NAME", None)
 OUTPUT_INFO = os.environ.get("OUTPUT_INFO", OUTPUT_INFO_DEFAULT)
 
-# By service name
-IGNORED_CONTAINERS = ["ecs-agent"]  # Ignored containers
-IGNORED_NAMES = ["internalecspause"]  # ignored parts of container names
-
 container_queue = Queue()
-
-# Config folder
-HOME_DIR = os.path.expanduser("~")
-CONFIG_FOLDER = "aws_tools"
-CONFIG_FILE = "config"
 
 # Function to display hostname and
 # IP address
@@ -94,29 +89,137 @@ def get_host_ip(host_name=""):
     return host_ip
 
 
-def get_instance_ids_from_cluster(cluster=CLUSTER_NAME, client=None):
+def get_clusters(client=None, region=REGION):
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ecs", region)
     try:
-        container_instances = client.list_container_instances(cluster=cluster)[
-            "containerInstanceArns"
-        ]
+        clusters = client.list_clusters()["clusterArns"]
+        return clusters
+    except (botocore.exceptions.ClientError) as e:
+        # https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_ListClusters.html
+        logger.error(f"Error: {str(e)}")
+        sys.exit(1)
+
+
+def describe_instances_with_cluster(
+    container_instances: Optional[List] = None,
+    cluster: str = CLUSTER_NAME,
+    client=None,
+    region: str = REGION,
+):
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ecs", region)
+    try:
         instances = client.describe_container_instances(
             cluster=cluster, containerInstances=container_instances
         )["containerInstances"]
         instance_ids = []
         for instance in instances:
-            instance_ids.append(instance.get("ec2InstanceId", None))
+            if instance:
+                instance_ids.append(instance.get("ec2InstanceId", None))
         return instance_ids
     except (botocore.exceptions.ClientError) as e:
         if e.response["Error"]["Code"] == "ClusterNotFoundException":
             logger.error(f"Cluster '{cluster}' not found: {str(e)}.")
         else:
-            logger.error(f"Error: {str(e)}.")
+            logger.error(f"Error: {str(e)}")
+        sys.exit(1)
+
+
+def get_tasks_information(
+    task: str,
+    list_tasks: str,
+    cluster=CLUSTER_NAME,
+    client=None,
+    region=REGION,
+):
+    """Get AWS ECS task information.
+
+
+    For the puspose of getting the EC2 instance id
+    by a given AWS ECS task name,
+    for now, only the 'containerInstanceArn' is fetched from the AWS ECS task.
+    """
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ecs", region)
+    try:
+        # Get all tasks in the cluster.
+        cluster_tasks = client.list_tasks(cluster=cluster)["taskArns"]
+        tasks = client.describe_tasks(cluster=cluster, tasks=cluster_tasks)[
+            "tasks"
+        ]
+        # Filter for given task name.
+        # Get instance id,
+        container_instances = []
+        task_name = ""
+        for task_ in tasks:
+            task_definition = task_.get("taskDefinitionArn", "")
+            if list_tasks:
+                container_instances.append(task_definition)
+                continue
+            container_instance_arn = task_.get("containerInstanceArn", None)
+            if container_instance_arn:
+                if not list_tasks:
+                    if re.search(task, task_definition):
+                        container_instances.append(container_instance_arn)
+                        task_name = task_definition
+                        break
+                else:
+                    container_instances.append(container_instance_arn)
+        if list_tasks:
+            return "\n".join(container_instances)
+        instances = describe_instances_with_cluster(
+            container_instances=container_instances,
+            cluster=cluster,
+            client=client,
+            region=region,
+        )
+        if not instances:
+            return ""
+        logger.info(f"Instance '{instances[0]}' runs task '{task_name}'.")
+        return instances[0]
+    except (botocore.exceptions.ClientError) as e:
+        # TODO: Check right error code.
+        if e.response["Error"]["Code"] == "ClusterNotFoundException":
+            logger.error(f"Cluster '{cluster}' not found: {str(e)}.")
+        else:
+            logger.error(f"Error: {str(e)}")
+        sys.exit(1)
+
+
+def get_instance_ids_from_cluster(
+    cluster=CLUSTER_NAME, client=None, region=REGION
+):
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ecs", region)
+    try:
+        container_instances = client.list_container_instances(cluster=cluster)[
+            "containerInstanceArns"
+        ]
+        return describe_instances_with_cluster(
+            container_instances=container_instances,
+            cluster=cluster,
+            client=client,
+            region=region,
+        )
+    except (botocore.exceptions.ClientError) as e:
+        if e.response["Error"]["Code"] == "ClusterNotFoundException":
+            logger.error(f"Cluster '{cluster}' not found: {str(e)}.")
+        else:
+            logger.error(f"Error: {str(e)}")
         sys.exit(1)
 
 
 def get_instance_info_by_service_dns(
-    instance_ids=None, service_ip="", client=None
+    instance_ids=None, service_ip="", client=None, region=REGION
 ):
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ec2", region)
     instance_private_ip = instance_private_dns = instance_id = ""
     if instance_ids and service_ip:
         reservations = client.describe_instances(InstanceIds=instance_ids)[
@@ -219,16 +322,20 @@ def get_containers(
 
 
 def get_instance_id_by_service_name(
-    region=REGION,
     instance_ids=None,
     service="",
     list_services=False,
     client=None,
+    region=REGION,
 ):
     if list_services:
         logger.info(f"List all deployed/running services.")
     else:
-        logger.info(f"Get instance of service '{service}'.")
+        logger.info(f"Get instance for service '{service}'.")
+
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ssm", region)
 
     container_names = []
 
@@ -302,128 +409,24 @@ def replace_config(default: str, variable: str, local_vars: Dict) -> str:
 
 
 def main():
-    """"""
+    """Provide cli arguments.
 
-    from ._version import __version__
+    When used as executable script with command line options.
+    """
 
-    parser = argparse.ArgumentParser(
-        description="Get ECS service info (e.g. EC2 instance id) by a given service name.",
-        epilog="Example:\npython aws_ecs_services.py by-service-dns --region <aws_region> --cluster <ecs_cluster_name> --dns <service_dns_name> --output <output_info>",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version="%(prog)s {version}".format(version=__version__),
-    )
+    # import aws_ecs_services.arguments as arguments
+    from .arguments import get_cli_arguments
 
-    parser.add_argument(
-        "--project",
-        default="",
-        help="Project to use. Requires a valid configuration in the config file.",
-    )
-    parser.add_argument(
-        "--service",
-        default="",
-        help="Service name to connect to. Requires a valid configuration in the config file.",
-    )
-    parser.add_argument(
-        "--config",
-        default=os.path.join(
-            os.path.join(os.path.join(HOME_DIR, ".config"), CONFIG_FOLDER),
-            CONFIG_FILE,
-        ),
-        help="Configuration to use. Default configuration file: '~/.config/aws_tools/config'.",
-    )
-
-    # Same for all subcommnds
-    config = argparse.ArgumentParser(add_help=False)
-
-    config.add_argument(
-        "-r", "--region", default=REGION_DEFAULT, help="AWS region."
-    )
-    config.add_argument(
-        "-c",
-        "--cluster",
-        default="",
-        help="AWS ECS cluster to get instances from.",
-    )
-    config.add_argument(
-        "--debug", action="store_true", help="Show debug info."
-    )
-
-    subparsers = parser.add_subparsers(
-        help="sub-command help", dest="subcommand"
-    )
-    subparsers.required = True
-
-    # create the parser for the "a" command
-    parser_dns = subparsers.add_parser(
-        "by-service-dns",
-        parents=[config],
-        help="Get instance information by service's dns name.",
-    )
-    parser_dns.add_argument(
-        "-d",
-        "--dns",
-        default="",
-        help="DNS name of the service to find the instance for.",
-    )
-    parser_dns.add_argument(
-        "-o",
-        "--output",
-        nargs="?",
-        default=OUTPUT_INFO_DEFAULT,
-        choices=["ip", "id", "all", "service"],
-        help="Information to return to the user. 'ip' returns the instance's private IP. 'id' returns the instance's id. 'all' returns the former and the private DNS. 'service' returns the service's IP only.",
-    )
-
-    # By service name
-    parser_name = subparsers.add_parser(
-        "by-service-name",
-        parents=[config],
-        help="Get instance id by service's name.",
-    )
-    name_action = parser_name.add_mutually_exclusive_group()
-    name_action.add_argument(
-        "-n",
-        "--name",
-        default="",
-        help="Name of the service to find the instance for.",
-    )
-
-    # Return all cluster instances
-    subparsers.add_parser(
-        "list-instances",
-        parents=[config],
-        help="Get all cluster instances.",
-    )
-
-    # Return all running cluster services.
-    subparsers.add_parser(
-        "list-services",
-        parents=[config],
-        help="Get all active cluster services.",
-    )
-    # Return all configured services.
-    subparsers.add_parser(
-        "list-configured-services",
-        parents=[config],
-        help="Get all configured services, in the config file.",
-    )
-    # Return all configured projects.
-    subparsers.add_parser(
-        "list-configured-projects",
-        parents=[config],
-        help="Get all configured projects, in the config file.",
-    )
-
-    args = parser.parse_args()
+    # args = arguments.get_cli_arguments()
+    args = get_cli_arguments()
 
     by_service_dns = False
     by_service_name = False
+    by_task_name = False
+    list_clusters = False
     only_instance_ids = False
     list_running_services = False
+    list_running_tasks = False
     list_services = False
     list_projects = False
     use_config = False
@@ -546,11 +549,27 @@ def main():
             service_name = service_name if service_name else service
         else:
             service_name = args.name
+    elif args.subcommand == "by-task-name":
+        by_task_name = True
+        if use_config:
+            task_name = project_config.get("name", "")
+            task_name_ = task_name
+            if service_config:
+                task_name_ = service_config.get("name", task_name)
+            task_name = replace_config(task_name_, "task_name", locals())
+            task_name = task_name if task_name else service
+        else:
+            task_name = args.name
+    elif args.subcommand == "list-clusters":
+        list_clusters = True
     elif args.subcommand == "list-instances":
         only_instance_ids = True
     elif args.subcommand == "list-services":
         list_running_services = True
         service_name = None
+    elif args.subcommand == "list-tasks":
+        list_running_tasks = True
+        task_name = None
     elif args.subcommand == "list-configured-services":
         list_services = True
         service_name = None
@@ -571,7 +590,8 @@ def main():
         print(*list(projects.keys()), sep="\n")
         return
 
-    if not cluster_name:
+    # No 'cluster' necessary for 'list-clusters'.
+    if not list_clusters and not cluster_name:
         logger.error(f"Cluster name missing.")
         return 1
 
@@ -587,6 +607,10 @@ def main():
         print(f"Found in {config}.")
         print(*services, sep="\n")
         return
+    elif list_clusters:
+        clusters = get_clusters(client=ecs_client)
+        print("\n".join(clusters))
+        return
     elif only_instance_ids:
         logger.info(f"Checking cluster: {cluster_name}")
         instance_ids = get_instance_ids_from_cluster(
@@ -600,12 +624,23 @@ def main():
             cluster=cluster_name, client=ecs_client
         )
         instance_id = get_instance_id_by_service_name(
-            region=region,
             instance_ids=instance_ids,
             service=service_name,
             list_services=list_running_services,
             client=ssm_client,
+            region=region,
         )
+
+        return
+    elif by_task_name or list_running_tasks:
+        logger.info(f"Checking cluster: {cluster_name}")
+        instance_ids = get_tasks_information(
+            task=task_name,
+            list_tasks=list_running_tasks,
+            cluster=cluster_name,
+            client=ecs_client,
+        )
+        print(instance_ids)
 
         return
     elif by_service_dns:

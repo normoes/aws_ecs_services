@@ -18,7 +18,7 @@ setup(
     install_requires=["boto3>=1.14.4"],
     # py_modules=["xmrto_wrapper"],
     packages=["aws_ecs_services"],
-    scripts=["bin/aws_ecs_services"],
+    scripts=["bin/aws_ecs_services", "bin/aws-ecs-services"],
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",

@@ -11,8 +11,9 @@ I work through a VPN, so I am only interested in the instances' private IP addre
 The script provides two ways to get the instance's information:
 * **1. approach**: For **ECS services that use service discovery** and register a DNS name with AWS Route53, it's possible to get the services's/container's private IP and then check which EC2 instance contains the same private IP.
 * **2. approach**: When using AWS SSM (with `ssm-agent` on EC2 instances and AWS Session Manager Plugin locally) the tool will connect to every ECS cluster instance and compares a given service with running ones (running docker containers).
+* **3. approach**: This approach does not require a special setup. The tool just goes through the list of AWS ECS tasks (task deifnitions) in the cluster and compares a given task with ative task definitions.
 
-In case the infrastructure is deployed with terraform, the service names as well as the DNS names of the services become predictable.
+In case the infrastructure is deployed with terraform, the ECS service and tasks names as well as the DNS names of the services become predictable.
 
 ## How
 
@@ -24,7 +25,10 @@ The tool is best used with `aws-vault`. So far I did not implement reading AWS p
 aws_ecs_services by-service-dns --region <aws_region> --cluster <ecs_cluster_name> --dns <service_dns_name> [--output <output_info>]
 ```
 
-The tool gets the DNS name of the service (AWS Route53). It also gets the name of the cluster the service was created in. Also the tool gets the AWS region to use.
+**_Note_**:
+* It's also possible to use a configuration file (see below) in order to shorten the above command.
+
+The tool requires the DNS name of the service (AWS Route53). It also requires the name of the cluster the service was created in. Also the tool requires the AWS region to use.
 
 The association between the service's DNS name and the instance private IP:
 * Get the IP of the service by DNS name (host name).
@@ -40,12 +44,29 @@ The association between the service's DNS name and the instance private IP:
 aws_ecs_services by-service-name --region <aws_region> --cluster <ecs_cluster_name> --name <part_of_service_name_even_regex>
 ```
 
-The tool gets the name of the service (AWS ECS service) or part of it (regular expressions allowed). It also gets the name of the cluster the service was created in. Also the tool gets the AWS region to work in.
+**_Note_**:
+* It's also possible to use a configuration file (see below) in order to shorten the above command.
+
+The tool requires the name of the service (AWS ECS service) or part of it (regular expressions allowed). It also requires the name of the cluster the service was created in. Also the tool requires the AWS region to work in.
 
 All cluster instances are checked for running docker containers. Using regular expressions the given service name is searched for in the list of docker container names. If a match is found the according instance id will be returned.
 
 Only the first match will be considered.
 
+**3. approach** (all services) using `by-task-name`:
+
+```
+aws_ecs_services by-task-name --region <aws_region> --cluster <ecs_cluster_name> --name <part_of_task_name_even_regex>
+```
+
+**_Note_**:
+* It's also possible to use a configuration file (see below) in order to shorten the above command.
+
+The tool requires the name of the service (AWS ECS task definition) or part of it (regular expressions allowed). It also requires the name of the cluster the task defintion is active in. Also the tool requires the AWS region to work in.
+
+All cluster tasks are checked. Using regular expressions the given task name is searched for in the list of cluster tasks. If a match is found the according instance id will be returned.
+
+Only the first match will be considered.
 
 ## Usage
 For better readability I will leave out `aws-vault` in the examples below.
@@ -53,8 +74,11 @@ For better readability I will leave out `aws-vault` in the examples below.
 There are 4 sub commands:
 * `by-service-dns` - Get instance information by service's dns name.
 * `by-service-name` - Get instance id by service's name.
+* `by-task-name` - Get instance id by task definition name.
+* `list-clusters` - Get all clusters.
 * `list-instances` - Get all cluster instances (instance ids).
 * `list-services` - Get all active cluster services.
+* `list-tasks` - Get all active cluster tasks.
 * `list-configured-services` - Get all configured services, in the config file. Requires a config file.
 * `list-configured-projects` - Get all configured projects, in the config file. Requires a config file.
 
@@ -179,36 +203,58 @@ To list all the configured services:
 The service-level configuration for `cluster` and `dns` overrules the project-level configuration.
 
 Example calls (see **Usage** for using cli options):
+- List clusters:
+     + You can list clusters using the cli options (see **Usage**).
+```
+    aws_ecs_services list-clusters
+    # Result is a list of AWS ECS clusters. Something like:
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/default
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/default-serviceB
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/default-serviceC
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/projectB
+```
 - List instances in the cluster:
-     + Right now, this only checks instances in the **project-level** cluster. **service-level** clusters are not considered, yet.
+     + When using a config file: Right now, this only checks instances in the **project-level** cluster. **service-level** clusters are not considered, yet.
      + You can list instances using the cli options (see **Usage**).
 ```
     # aws_ecs_services --project <configured_project> list-instances
     aws_ecs_services --project projectA list-instances
-    # Result is a string of AWS EC2 instance ids of instances in the  cluster. Something like:
+    # Result is a string of AWS EC2 instance ids of instances in the cluster. Something like:
     i-04d153c42e9b71b8a i-05169fb090fb6a68b i-03029360ad379566d i-01b155c39d4324ad7
 ```
 - List running services in the cluster:
-     + Right now, this only checks instances in the **project-level** cluster. **service-level** clusters are not considered, yet.
+     + Actually lists the docker container names.
+     + When using a config file: Right now, this only checks instances in the **project-level** cluster. **service-level** clusters are not considered, yet.
      + You can list running services using the cli options (see **Usage**).
 ```
     # aws_ecs_services --project <configured_project> list-services
     aws_ecs_services --project projectA list-services
-    # Result is a list of AWS ECS services running in the cluster. Something like:
+    # Result is a list of AWS ECS services (docker container names) running in the cluster. Something like:
     ecs-default-serviceA-1-default-serviceA-b4cedd8899a7cba90b00
     ecs-deafult-serviceB-serviceB-1-default-serviceB-serviceB-b4cedd8899a7cba90b01
     ecs-default-serviceC-serviceC-1-default-serviceC-serviceC-b4cedd8899a7cba90b02
     ecs-default-serviceC-serviceD-1-default-serviceC-serviceD-b4cedd8899a7cba90b04
     ecs-default-serviceE-1-default-serviceE-b4cedd8899a7cba90b05
 ```
-- Get a service by its DNS name: `by-service-dns`:
+- List running tasks in the cluster:
+     + Actually lists the ECS task defintion names.
+     + When using a config file: Right now, this only checks instances in the **project-level** cluster. **service-level** clusters are not considered, yet.
+     + You can list running tasks using the cli options (see **Usage**).
+```
+    # aws_ecs_services --project <configured_project> list-tasks
+    aws_ecs_services --project projectA list-tasks
+    # Result is a list of AWS ECS tasks running in the cluster. Something like:
+    arn:aws:ecs:eu-west-2:<account_id>:task-definition/serviceB:87
+    arn:aws:ecs:eu-west-2:<account_id>:task-definition/serviceE:262
+```
+- Get the instance for a service by its DNS name: `by-service-dns`:
 ```
     # aws_ecs_services --project <configured_project> --service <configured_service> by-service-dns --output id
     aws_ecs_services --project projectA --service serviceA by-service-dns --output id
     # Result:
     i-00epg17383ba1e1cg
 ```
-- Get a service by its ECS service name: `by-service-name`:
+- Get the instance for a service by its ECS service name: `by-service-name`:
     + `--service` is used to search for the project's service in the configuration file.
     + By default `--service` is also used as the running AWS ECS service to search for.
     + It is possible to additionally add the `--name` option to `by-service-name`, which allows regular expressions. `--name` is preferred over the value of `--service` when it comes to searching for the running AWS ECS service (see **Usage**).
@@ -227,6 +273,26 @@ Example calls (see **Usage** for using cli options):
     # aws_ecs_services --project <configured_project> --service <configured_service> by-service-name --name <part_of_service_name_even_regex>
     aws_ecs_services --project projectA --service serviceA by-service-name --name "serviceA-[0-9]+"
     INFO:AwsGetInstance:Instance 'i-00epg17383ba1e1cg' runs container 'ecs-default-serviceA-1-default-serviceA-b4cedd8899a7cba90b00'
+    # Result:
+    i-00epg17383ba1e1cg
+```
+- Get the instance for a service by its ECS task definition name: `by-task-name`:
+    + `--service` is used to search for the project's service in the configuration file.
+    + By default `--service` is also used as the running AWS ECS task to search for.
+    + It is possible to additionally add the `--name` option to `by-task-name`, which allows regular expressions. `--name` is preferred over the value of `--service` when it comes to searching for the running AWS ECS task (see **Usage**).
+        - **Use case**: See **Use case** above for `by-service-name`.
+```
+    # aws_ecs_services --project <configured_project> --service <configured_service> by-task-name
+    aws_ecs_services --project projectA --service serviceA by-task-name
+    INFO:AwsGetInstance:Instance 'i-04ef6e335a618932a' runs task 'arn:aws:ecs:eu-west-2:<account_id>:task-definition/serviceA1:262'.
+    # Result:
+    i-04ef6e335a618932a
+    # The same can be achieved without the use of a configuration file:
+    # aws_ecs_services by-task-name --region eu-west-2 --cluster default --name serviceA
+
+    # aws_ecs_services --project <configured_project> --service <configured_service> by-task-name --name <part_of_task_name_even_regex>
+    aws_ecs_services --project projectA --service serviceA by-task-name --name "serviceA-[0-9]+"
+    INFO:AwsGetInstance:Instance 'i-00epg17383ba1e1cg' runs task 'arn:aws:ecs:eu-west-2:<account_id>:task-definition/serviceA:26'.
     # Result:
     i-00epg17383ba1e1cg
 ```
