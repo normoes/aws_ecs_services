@@ -148,9 +148,11 @@ def get_tasks_information(
     try:
         # Get all tasks in the cluster.
         cluster_tasks = client.list_tasks(cluster=cluster)["taskArns"]
+        logger.debug(f"[CLUSTERTASKS]: '{cluster_tasks}'.")
         tasks = client.describe_tasks(cluster=cluster, tasks=cluster_tasks)[
             "tasks"
         ]
+        logger.debug(f"[TASKS]: '{tasks}'.")
         # Filter for given task name.
         # Get instance id,
         container_instances = []
@@ -187,6 +189,32 @@ def get_tasks_information(
             logger.error(f"Cluster '{cluster}' not found: {str(e)}.")
         else:
             logger.error(f"Error: {str(e)}")
+        sys.exit(1)
+
+
+def get_instances_form_ec2(client=None, region=REGION):
+    if not client:
+        session = boto3.session.Session()
+        client = session.client("ec2", region)
+    try:
+        ec2_instances = client.describe_instances()["Reservations"]
+        instances = {}
+        for instance_ in ec2_instances:
+            for instance in instance_.get("Instances", []):
+                tags = {}
+                for tag in instance.get("Tags", []):
+                    if tag.get("Key", "").lower() == "Name".lower():
+                        tags[tag["Key"].lower()] = tag["Value"]
+                        break
+                data = {
+                    "instance_type": instance["InstanceType"],
+                    "private_ip_address": instance.get("PrivateIpAddress", ""),
+                    "tags": tags,
+                }
+                instances[instance["InstanceId"]] = data
+        return instances
+    except (botocore.exceptions.ClientError) as e:
+        logger.error(f"Error: {str(e)}")
         sys.exit(1)
 
 
@@ -424,7 +452,8 @@ def main():
     by_service_name = False
     by_task_name = False
     list_clusters = False
-    only_instance_ids = False
+    only_cluster_instances = False
+    only_ec2_instances = False
     list_running_services = False
     list_running_tasks = False
     list_services = False
@@ -560,10 +589,12 @@ def main():
             task_name = task_name if task_name else service
         else:
             task_name = args.name
+    elif args.subcommand == "list-ec2-instances":
+        only_ec2_instances = True
     elif args.subcommand == "list-clusters":
         list_clusters = True
     elif args.subcommand == "list-instances":
-        only_instance_ids = True
+        only_cluster_instances = True
     elif args.subcommand == "list-services":
         list_running_services = True
         service_name = None
@@ -591,7 +622,7 @@ def main():
         return
 
     # No 'cluster' necessary for 'list-clusters'.
-    if not list_clusters and not cluster_name:
+    if not list_clusters and not only_ec2_instances and not cluster_name:
         logger.error(f"Cluster name missing.")
         return 1
 
@@ -607,11 +638,15 @@ def main():
         print(f"Found in {config}.")
         print(*services, sep="\n")
         return
+    elif only_ec2_instances:
+        instances = get_instances_form_ec2(client=ec2_client)
+        print(json.dumps(instances))
+        return
     elif list_clusters:
         clusters = get_clusters(client=ecs_client)
         print("\n".join(clusters))
         return
-    elif only_instance_ids:
+    elif only_cluster_instances:
         logger.info(f"Checking cluster: {cluster_name}")
         instance_ids = get_instance_ids_from_cluster(
             cluster=cluster_name, client=ecs_client

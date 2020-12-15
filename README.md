@@ -15,6 +15,8 @@ The script provides two ways to get the instance's information:
 
 In case the infrastructure is deployed with terraform, the ECS service and tasks names as well as the DNS names of the services become predictable.
 
+There are other commands, see below.
+
 ## How
 
 The tool is best used with `aws-vault`. So far I did not implement reading AWS profiles with `boto3` e.g.
@@ -71,12 +73,13 @@ Only the first match will be considered.
 ## Usage
 For better readability I will leave out `aws-vault` in the examples below.
 
-There are 4 sub commands:
+These are the possible commands:
 * `by-service-dns` - Get instance information by service's dns name.
 * `by-service-name` - Get instance id by service's name.
 * `by-task-name` - Get instance id by task definition name.
 * `list-clusters` - Get all clusters.
 * `list-instances` - Get all cluster instances (instance ids).
+* `list-ec2-instances` - In case the `ecs-agent` is not connected, it gets all possible EC2 instance ids and private IP addresses.
 * `list-services` - Get all active cluster services.
 * `list-tasks` - Get all active cluster tasks.
 * `list-configured-services` - Get all configured services, in the config file. Requires a config file.
@@ -118,6 +121,10 @@ The default output of the subcommand `by-service-dns` is the instance's private 
     ```
 * If called with `--output all` it displays both of the values above. In addition it returns the instance's private DNS name.
 * If called with `--output service` it displays the service's IP address only.
+
+It's possible to define a configuration file (see **Use with configuration file**).
+* `--project` defines the project defined in the configuration file to be used.
+* `--service` defines the service for the given project defined in the configuration file to be used.
 
 ## Use with configuration file
 
@@ -203,16 +210,6 @@ To list all the configured services:
 The service-level configuration for `cluster` and `dns` overrules the project-level configuration.
 
 Example calls (see **Usage** for using cli options):
-- List clusters:
-     + You can list clusters using the cli options (see **Usage**).
-```
-    aws_ecs_services list-clusters
-    # Result is a list of AWS ECS clusters. Something like:
-    arn:aws:ecs:eu-west-2:<account_id>:cluster/default
-    arn:aws:ecs:eu-west-2:<account_id>:cluster/default-serviceB
-    arn:aws:ecs:eu-west-2:<account_id>:cluster/default-serviceC
-    arn:aws:ecs:eu-west-2:<account_id>:cluster/projectB
-```
 - List instances in the cluster:
      + When using a config file: Right now, this only checks instances in the **project-level** cluster. **service-level** clusters are not considered, yet.
      + You can list instances using the cli options (see **Usage**).
@@ -295,6 +292,45 @@ Example calls (see **Usage** for using cli options):
     INFO:AwsGetInstance:Instance 'i-00epg17383ba1e1cg' runs task 'arn:aws:ecs:eu-west-2:<account_id>:task-definition/serviceA:26'.
     # Result:
     i-00epg17383ba1e1cg
+```
+- List clusters:
+     + You can list clusters like this.
+```
+    aws_ecs_services list-clusters
+    # Result is a list of AWS ECS clusters. Something like:
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/default
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/default-serviceB
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/default-serviceC
+    arn:aws:ecs:eu-west-2:<account_id>:cluster/projectB
+```
+- In case the `ecs-agent` is not connected (for example), list all the EC2 instances (instance id, private IP address, `Name` tag):
+     + You can list EC2 instances like this.
+```
+    aws_ecs_services list-ec2-instances | jq
+    # Result is a list of AWS EC2 instances. Something like:
+    {
+      "i-07ba28172h8s17c44c": {
+        "instance_type": "t3.small",
+        "private_ip_address": "10.16.35.164",
+        "tags": {
+          "name": "projectA"
+        }
+      },
+      "i-0rba289056hsdohe8r": {
+        "instance_type": "t3.small",
+        "private_ip_address": "10.16.35.154",
+        "tags": {
+          "name": "projectA-serviceB"
+        }
+      },
+      "i-0d0b194d33wer5ce14": {
+        "instance_type": "t3.small",
+        "private_ip_address": "10.16.35.144",
+        "tags": {
+          "name": "projectB"
+        }
+      }
+    }
 ```
 
 ### Variable replacement

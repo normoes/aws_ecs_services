@@ -113,6 +113,12 @@ def get_cli_arguments():
         help="Name of the service to find the instance for.",
     )
 
+    # Return all cluster instances
+    subparsers.add_parser(
+        "list-ec2-instances",
+        parents=[config],
+        help="Get all ec2 instances.",
+    )
     # Return all clusters
     subparsers.add_parser(
         "list-clusters",
